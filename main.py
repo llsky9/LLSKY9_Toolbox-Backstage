@@ -4,6 +4,7 @@ import json
 import time
 import subprocess
 import threading
+import math
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QWidget, 
     QListWidget, QListWidgetItem, QScrollArea, 
@@ -29,7 +30,6 @@ def load_config(current_dir, config_file=".res/config.ini"):
     parser = configparser.ConfigParser()
     full_config_path = os.path.join(current_dir, config_file)
     
-    # 🚨 注意: 在这里不能使用 QMessageBox，因为它需要 QApplication 实例
     try:
         if not os.path.exists(full_config_path):
             print(f"Error: Configuration file '{full_config_path}' not found!")
@@ -37,7 +37,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
 
         parser.read(full_config_path, encoding='utf-8')
 
-        # 1. 窗口基础设置 (WINDOW_SETTINGS)
+        # 1. 窗口基础设置
         USER_CONFIG.update({
             "WINDOW_WIDTH": parser.getint('WINDOW_SETTINGS', 'WINDOW_WIDTH'),
             "WINDOW_HEIGHT": parser.getint('WINDOW_SETTINGS', 'WINDOW_HEIGHT'),
@@ -48,7 +48,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
             "TEXT_COLOR": parser.get('WINDOW_SETTINGS', 'TEXT_COLOR'),
         })
 
-        # 2. 字体大小独立控制 (FONT_SIZES)
+        # 2. 字体大小
         USER_CONFIG["FONT_SIZES"] = {
             "APP_TITLE": parser.getint('FONT_SIZES', 'APP_TITLE'),
             "VERSION": parser.getint('FONT_SIZES', 'VERSION'),
@@ -57,7 +57,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
             "TOOL_NAME": parser.getint('FONT_SIZES', 'TOOL_NAME'),
         }
 
-        # 3. 界面布局位置控制 (LAYOUT_GEOMETRY)
+        # 3. 界面布局
         USER_CONFIG["TITLE_Geometry"] = (
             parser.getint('LAYOUT_GEOMETRY', 'TITLE_X'), 
             parser.getint('LAYOUT_GEOMETRY', 'TITLE_Y'), 
@@ -80,9 +80,9 @@ def load_config(current_dir, config_file=".res/config.ini"):
             parser.getint('LAYOUT_GEOMETRY', 'DESC_W'), 
             parser.getint('LAYOUT_GEOMETRY', 'DESC_H')
         )
-        USER_CONFIG["DESC_ALIGN"] = Qt.AlignCenter # 保持默认对齐
+        USER_CONFIG["DESC_ALIGN"] = Qt.AlignCenter 
 
-        # 4. 窗口控制按钮 (BUTTON_CONTROLS)
+        # 4. 窗口控制按钮
         USER_CONFIG["BTN_CLOSE"] = {
             "GEOMETRY": (
                 parser.getint('BUTTON_CONTROLS', 'CLOSE_X'), 
@@ -105,7 +105,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
             "FONT_SIZE": parser.getint('BUTTON_CONTROLS', 'MIN_FONT_SIZE')
         }
 
-        # 5. 软件图标排版 (ITEM_CONFIG)
+        # 5. 软件图标排版
         USER_CONFIG["ITEM_CONFIG"] = {
             "WIDTH": parser.getint('ITEM_CONFIG', 'WIDTH'),
             "HEIGHT": parser.getint('ITEM_CONFIG', 'HEIGHT'),
@@ -122,12 +122,17 @@ def load_config(current_dir, config_file=".res/config.ini"):
 
 
 # ==========================================
-#      核心组件1：自动居中流式容器
+#      核心组件1：自动居中流式容器 (支持拖拽排序)
 # ==========================================
 class ResponsiveContainer(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.tools = []
+        self.tools = [] # 存储 ToolItem 对象
+        self.parent_win = None # 将在添加时赋值
+        self.current_cols = 1 # 当前列数，用于计算索引
+
+    def set_window_instance(self, win):
+        self.parent_win = win
 
     def add_tool(self, tool_btn):
         tool_btn.setParent(self)
@@ -144,9 +149,8 @@ class ResponsiveContainer(QWidget):
         self.update_layout()
         super().resizeEvent(event)
 
-    def update_layout(self):
-        if not self.tools: return
-
+    def get_layout_params(self):
+        """获取当前布局参数和起始偏移量"""
         container_width = self.width()
         cfg = USER_CONFIG["ITEM_CONFIG"]
         w = cfg["WIDTH"]
@@ -157,23 +161,89 @@ class ResponsiveContainer(QWidget):
         safe_width = container_width - 20 
         cols = (safe_width + sx) // (w + sx)
         cols = max(1, int(cols))
+        self.current_cols = cols
 
         actual_grid_width = cols * w + (cols - 1) * sx
         start_x = (container_width - actual_grid_width) // 2
+        return w, h, sx, sy, cols, start_x
+
+    def update_layout(self, exclude_item=None):
+        """更新所有图标的位置，可排除特定图标(正在拖拽的)"""
+        if not self.tools: return
+
+        w, h, sx, sy, cols, start_x = self.get_layout_params()
         
         for i, btn in enumerate(self.tools):
+            # 如果是正在拖拽的图标，跳过它的自动定位
+            if btn == exclude_item:
+                continue
+
             row = i // cols
             col = i % cols
             x = start_x + col * (w + sx)
             y = 10 + row * (h + sy) 
+            
+            # 使用动画或直接移动
             btn.move(int(x), int(y))
 
+        # 更新容器总高度
         total_rows = (len(self.tools) - 1) // cols + 1
         total_height = 20 + total_rows * (h + sy)
         self.setMinimumHeight(total_height)
 
+    def get_index_at_pos(self, pos):
+        """根据坐标计算应该所在的列表索引 (核心逻辑)"""
+        w, h, sx, sy, cols, start_x = self.get_layout_params()
+        
+        # 简单的网格索引计算
+        rel_x = pos.x() - start_x
+        rel_y = pos.y() - 10
+        
+        # 加上半个item的宽高作为容错，使得判定点更自然
+        # 这里其实直接算所在的行列
+        
+        col = round(rel_x / (w + sx))
+        row = round(rel_y / (h + sy))
+        
+        # 边界限制
+        if col < 0: col = 0
+        if col >= cols: col = cols - 1
+        if row < 0: row = 0
+        
+        index = row * cols + col
+        
+        # 限制最大索引
+        if index >= len(self.tools):
+            index = len(self.tools) - 1
+        if index < 0:
+            index = 0
+            
+        return index
+
+    def reorder_item(self, item, center_pos):
+        """当拖拽发生时，实时调整列表顺序"""
+        current_index = self.tools.index(item)
+        target_index = self.get_index_at_pos(center_pos)
+
+        if current_index != target_index:
+            # 移动列表中的元素
+            self.tools.pop(current_index)
+            self.tools.insert(target_index, item)
+            
+            # 重新布局其他元素（不移动正在拖拽的item）
+            self.update_layout(exclude_item=item)
+
+    def finalize_drag(self, item):
+        """拖拽结束，将item吸附到最终格子，并保存数据"""
+        self.update_layout() # 强制所有归位
+        
+        # 通知主窗口保存新的顺序
+        if self.parent_win:
+            self.parent_win.save_tools_order([t.tool_info_str for t in self.tools])
+
+
 # ==========================================
-#      核心组件2：软件图标 (解析与交互)
+#      核心组件2：软件图标 (解析与交互 + 拖拽)
 # ==========================================
 class ToolItem(QWidget):
     def __init__(self, name, desc, path, tool_info_str, parent_win):
@@ -181,12 +251,16 @@ class ToolItem(QWidget):
         self.name = name
         self.desc = desc 
         self.path = path
-        self.tool_info_str = tool_info_str # 存储完整的软件信息字符串
+        self.tool_info_str = tool_info_str 
         self.parent_win = parent_win
         
         self.last_left_click = 0
         self.last_right_click = 0
         self.click_interval = 300 
+        
+        # 拖拽相关变量
+        self.drag_start_pos = None
+        self.is_dragging = False
         
         cfg = USER_CONFIG["ITEM_CONFIG"]
         self.setFixedSize(cfg["WIDTH"], cfg["HEIGHT"])
@@ -204,6 +278,14 @@ class ToolItem(QWidget):
             QWidget#ToolItem {
                 background: rgba(255, 255, 255, 40);
                 border: 1px solid rgba(255, 255, 255, 50);
+                border-radius: 5px;
+            }
+        """
+        # 拖拽时的样式
+        self.style_dragging = """
+            QWidget#ToolItem {
+                background: rgba(0, 170, 255, 80);
+                border: 2px solid #00aaff;
                 border-radius: 5px;
             }
         """
@@ -236,7 +318,6 @@ class ToolItem(QWidget):
         layout.addWidget(self.icon_label, 0, Qt.AlignHCenter)
         layout.addWidget(self.text_label, 0, Qt.AlignHCenter)
         
-        # 异步加载图标
         self.load_icon()
 
     def load_icon(self):
@@ -249,12 +330,10 @@ class ToolItem(QWidget):
         icon_size = USER_CONFIG["ITEM_CONFIG"]["ICON_SIZE"]
         pixmap = None
         
-        # 优先加载同名PNG图标
         icon_path_png = os.path.join(current_dir, "icons", f"{self.name}.png")
         if os.path.exists(icon_path_png):
             pixmap = QPixmap(icon_path_png)
         
-        # 其次尝试加载程序文件图标
         if not pixmap or pixmap.isNull():
             full_path = os.path.join(current_dir, self.path.lstrip(os.sep))
             if os.path.exists(full_path):
@@ -262,7 +341,6 @@ class ToolItem(QWidget):
                 icon = QFileIconProvider().icon(file_info)
                 pixmap = icon.pixmap(icon_size, icon_size)
 
-        # 最后使用默认图标
         if not pixmap or pixmap.isNull():
             default_path = os.path.join(current_dir, "default.png")
             if os.path.exists(default_path):
@@ -275,45 +353,90 @@ class ToolItem(QWidget):
         else:
             self.icon_label.setText("?")
 
-    # --- 交互逻辑：悬停显示描述，双击启动 ---
     def enterEvent(self, event):
-        self.setStyleSheet(self.style_hover)
-        
-        if self.desc: 
-            text_to_show = f"{self.name} : {self.desc}"
-        else:
-            text_to_show = self.name
-            
-        self.parent_win.update_description(text_to_show)
+        if not self.is_dragging:
+            self.setStyleSheet(self.style_hover)
+            text_to_show = f"{self.name} : {self.desc}" if self.desc else self.name
+            self.parent_win.update_description(text_to_show)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.setStyleSheet(self.style_normal)
-        self.parent_win.update_description("") 
+        if not self.is_dragging:
+            self.setStyleSheet(self.style_normal)
+            self.parent_win.update_description("") 
         super().leaveEvent(event)
 
+    # --- 核心修改：鼠标事件处理 (增加拖拽逻辑) ---
     def mousePressEvent(self, event):
-        current_time = time.time() * 1000
         if event.button() == Qt.LeftButton:
-            # 单击: 选中软件并更新描述 (用于后续管理)
+            # 记录按下的相对位置，用于计算移动偏移
+            self.drag_start_pos = event.pos() 
+            self.is_dragging = False # 重置状态
+            
+            current_time = time.time() * 1000
             if current_time - self.last_left_click > self.click_interval:
                 self.parent_win.selected_software_info = self.tool_info_str 
-                
-            if current_time - self.last_left_click < self.click_interval:
-                # 左键双击 -> 启动
-                self.parent_win.launch_app(self.path)
             self.last_left_click = current_time
             
         elif event.button() == Qt.RightButton:
-            # 单击右键: 选中软件并弹出管理菜单
+            current_time = time.time() * 1000
             if current_time - self.last_right_click > self.click_interval:
                 self.parent_win.selected_software_info = self.tool_info_str
                 self.parent_win.show_tool_context_menu(self.tool_info_str, event.globalPos())
-            
             if current_time - self.last_right_click < self.click_interval:
-                # 右键双击 -> 打开文件夹
                 self.parent_win.open_folder(self.path)
             self.last_right_click = current_time
+
+    def mouseMoveEvent(self, event):
+        if not (event.buttons() & Qt.LeftButton):
+            return
+            
+        if not self.drag_start_pos:
+            return
+
+        # 计算移动距离，判断是否构成拖拽
+        dist = (event.pos() - self.drag_start_pos).manhattanLength()
+        
+        # 只有移动超过一定像素，才判定为拖拽，避免手抖
+        if not self.is_dragging:
+            if dist > 10:
+                self.is_dragging = True
+                self.setStyleSheet(self.style_dragging)
+                self.raise_() # 将控件置于顶层
+                
+        if self.is_dragging:
+            # 移动控件 (相对于父容器)
+            # mapToParent(event.pos()) 是鼠标当前在父容器的坐标
+            # self.drag_start_pos 是鼠标在控件内的偏移
+            new_pos = self.mapToParent(event.pos()) - self.drag_start_pos
+            
+            # 简单的边界限制，防止拖出太远
+            parent_rect = self.parent().rect()
+            if parent_rect.contains(new_pos):
+                 self.move(new_pos)
+            else:
+                self.move(new_pos) # 允许拖出一点，体验更好
+            
+            # 调用父容器的重排逻辑
+            # 我们传递控件中心点坐标给父容器计算
+            center_pos = self.pos() + QPoint(self.width() // 2, self.height() // 2)
+            self.parent().reorder_item(self, center_pos)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self.is_dragging:
+                # 拖拽结束
+                self.is_dragging = False
+                self.setStyleSheet(self.style_hover) # 恢复悬停样式
+                self.parent().finalize_drag(self) # 吸附归位
+            else:
+                # 是普通的点击（双击逻辑由时间间隔判断）
+                current_time = time.time() * 1000
+                if current_time - self.last_left_click < self.click_interval:
+                    self.parent_win.launch_app(self.path)
+                
+        self.drag_start_pos = None
+
 
 # ==========================================
 #      核心组件3：软件添加/编辑对话框
@@ -325,12 +448,12 @@ class AddEditSoftwareDialog(QDialog):
         self.setWindowTitle("添加软件" if not tool_info_str else "编辑软件")
         self.category = category
         self.tool_info_str = tool_info_str
-        self.result = None # Stores the new tool info string or None
+        self.result = None 
         self.parent_win = parent
         
         self.setMinimumWidth(400)
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("background-color: #333; color: white;") # 保持暗色风格
+        self.setStyleSheet("background-color: #333; color: white;") 
 
         self.setup_ui()
         if tool_info_str:
@@ -339,19 +462,16 @@ class AddEditSoftwareDialog(QDialog):
     def setup_ui(self):
         layout = QGridLayout(self)
 
-        # 1. 工具名
         layout.addWidget(QLabel("工具名:"), 0, 0)
         self.name_input = QLineEdit()
         self.name_input.setStyleSheet("background-color: #555; color: white;")
         layout.addWidget(self.name_input, 0, 1, 1, 2)
 
-        # 2. 说明
         layout.addWidget(QLabel("说明:"), 1, 0)
         self.desc_input = QLineEdit()
         self.desc_input.setStyleSheet("background-color: #555; color: white;")
         layout.addWidget(self.desc_input, 1, 1, 1, 2)
 
-        # 3. 路径
         layout.addWidget(QLabel("路径:"), 2, 0)
         self.path_input = QLineEdit()
         self.path_input.setStyleSheet("background-color: #555; color: white;")
@@ -362,7 +482,6 @@ class AddEditSoftwareDialog(QDialog):
         browse_btn.clicked.connect(self.browse_file)
         layout.addWidget(browse_btn, 2, 2)
         
-        # 4. 保存按钮
         save_btn = QPushButton("💾 保存")
         save_btn.setStyleSheet("background-color: #00aaff; color: white; border-radius: 5px; height: 30px;")
         save_btn.clicked.connect(self.save_data)
@@ -376,11 +495,9 @@ class AddEditSoftwareDialog(QDialog):
         self.setWindowTitle(f"编辑软件: {name}")
 
     def browse_file(self):
-        # 尝试使用配置的目录作为初始目录
         initial_dir = self.parent_win.current_dir
         file_path, _ = QFileDialog.getOpenFileName(self, "选择软件文件", initial_dir, "所有文件 (*.*)")
         if file_path:
-            # 获取相对路径
             relative_path = os.path.relpath(file_path, self.parent_win.current_dir)
             self.path_input.setText(relative_path)
 
@@ -402,16 +519,13 @@ class AddEditSoftwareDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # 获取程序运行目录
         self.current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.drag_pos = None
-        self.data = {} # 存储数据
-        self.data_path = "" # data.json 的路径
-        self.is_dirty = False # 数据是否已修改的标志
-        self.selected_software_info = None # 当前选中的软件信息 (完整字符串)
+        self.data = {} 
+        self.data_path = "" 
+        self.is_dirty = False 
+        self.selected_software_info = None 
         
-        # 从全局配置中获取尺寸
-        # 🚨 确保 USER_CONFIG 已经在 if __name__ == "__main__": 中成功加载
         self.W = USER_CONFIG.get("WINDOW_WIDTH", 1280)
         self.H = USER_CONFIG.get("WINDOW_HEIGHT", 760)
         self.SIDEBAR_W = int(self.W * USER_CONFIG.get("SIDEBAR_RATIO", 0.2))
@@ -420,7 +534,6 @@ class MainWindow(QMainWindow):
         self.setup_window()
         self.setup_ui()
 
-        # 延迟加载数据
         QTimer.singleShot(10, self.load_data)
 
     def setup_window(self):
@@ -449,17 +562,14 @@ class MainWindow(QMainWindow):
         container.setGeometry(0, 0, self.SIDEBAR_W, self.H)
         container.setStyleSheet("background: transparent;") 
 
-        # 标题
         title = QLabel(USER_CONFIG.get("TITLE_TEXT", "LLSKY9工具箱"), container)
         title.setGeometry(*USER_CONFIG.get("TITLE_Geometry", (0, 20, 256, 40))) 
         title.setAlignment(Qt.AlignCenter)
         f_size = USER_CONFIG["FONT_SIZES"].get("APP_TITLE", 18)
         title.setStyleSheet(f"color: white; font-family: '{USER_CONFIG['FONT_FAMILY']}'; font-size: {f_size}px; font-weight: bold;")
 
-        # --- 新增: 管理按钮区 ---
         self.create_management_buttons(container)
         
-        # 分类列表 - 调整高度以容纳新按钮
         self.category_list = QListWidget(container)
         self.category_list.setGeometry(0, 130, self.SIDEBAR_W, self.H - 170) 
         self.category_list.setFocusPolicy(Qt.NoFocus)
@@ -491,12 +601,9 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.category_list.currentItemChanged.connect(self.on_category_changed)
-        # 允许右键菜单
         self.category_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.category_list.customContextMenuRequested.connect(self.on_category_context_menu)
 
-
-        # 版本号
         ver = QLabel(USER_CONFIG.get("VERSION_TEXT", "Version: 11.0"), container)
         ver.setGeometry(*USER_CONFIG.get("VERSION_Geometry", (0, 730, 256, 20)))
         ver.setAlignment(Qt.AlignCenter)
@@ -504,11 +611,9 @@ class MainWindow(QMainWindow):
         ver.setStyleSheet(f"color: rgba(255,255,255,0.3); font-size: {v_f_size}px;")
 
     def create_management_buttons(self, parent):
-        """在侧边栏添加管理按钮 (取代旧版左侧的多个按钮)"""
-        y_start = 75 # 位于标题下方
+        y_start = 75 
         h = 25
         
-        # 1. 添加分类按钮
         btn_add_cat = QLabel("➕ 添加分类", parent)
         btn_add_cat.setGeometry(5, y_start, self.SIDEBAR_W // 2 - 7, h)
         btn_add_cat.setAlignment(Qt.AlignCenter)
@@ -519,7 +624,6 @@ class MainWindow(QMainWindow):
         btn_add_cat.setCursor(Qt.PointingHandCursor)
         btn_add_cat.mousePressEvent = lambda e: self.add_category()
         
-        # 2. 添加软件按钮 (连接到 add_software 方法)
         btn_add_tool = QLabel("📁 添加软件", parent)
         btn_add_tool.setGeometry(self.SIDEBAR_W // 2 + 2, y_start, self.SIDEBAR_W // 2 - 7, h)
         btn_add_tool.setAlignment(Qt.AlignCenter)
@@ -544,11 +648,11 @@ class MainWindow(QMainWindow):
         """)
 
         self.responsive_container = ResponsiveContainer()
+        self.responsive_container.set_window_instance(self) # 关联主窗口实例
         self.responsive_container.setStyleSheet("background: transparent;")
         self.scroll_area.setWidget(self.responsive_container)
 
     def create_top_elements(self):
-        # 描述框
         self.desc_label = QLabel("", self)
         self.desc_label.setGeometry(*USER_CONFIG.get("DESC_Geometry", (280, 15, 870, 35)))
         self.desc_label.setAlignment(USER_CONFIG.get("DESC_ALIGN", Qt.AlignCenter))
@@ -559,7 +663,6 @@ class MainWindow(QMainWindow):
             font-size: {d_f_size}px;
         """)
 
-        # 控制按钮
         close_conf = USER_CONFIG["BTN_CLOSE"]
         btn_close = QLabel(close_conf["TEXT"], self)
         btn_close.setGeometry(*close_conf["GEOMETRY"])
@@ -569,7 +672,6 @@ class MainWindow(QMainWindow):
             QLabel:hover {{ background-color: rgba(255, 0, 0, 0.3); }} 
         """)
         btn_close.setCursor(Qt.PointingHandCursor)
-        # 更改关闭操作为 self.close()，它会触发 closeEvent
         btn_close.mousePressEvent = lambda e: self.close() 
         
         min_conf = USER_CONFIG["BTN_MIN"]
@@ -601,14 +703,12 @@ class MainWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignCenter) 
                 self.category_list.addItem(item)
             
-            # 默认选中第一个分类
             if self.category_list.count() > 0:
                  self.category_list.setCurrentRow(0)
         except Exception as e:
             QMessageBox.critical(self, "数据错误", f"加载数据时发生错误: {e}")
 
     def save_data(self):
-        """保存数据到 data.json"""
         if not self.is_dirty:
             return True
         
@@ -622,7 +722,6 @@ class MainWindow(QMainWindow):
             return False
 
     def closeEvent(self, event):
-        """拦截窗口关闭事件，检查是否有未保存的数据"""
         if self.is_dirty:
             reply = QMessageBox.question(
                 self, '确认退出',
@@ -635,7 +734,7 @@ class MainWindow(QMainWindow):
                 if self.save_data():
                     event.accept()
                 else:
-                    event.ignore() # 如果保存失败，忽略关闭
+                    event.ignore()
             elif reply == QMessageBox.Discard:
                 event.accept()
             else:
@@ -656,36 +755,28 @@ class MainWindow(QMainWindow):
                 desc = parts[1].strip()
                 path = parts[2].strip() 
                 
-                # 传递完整的工具字符串给 ToolItem
                 btn = ToolItem(name, desc, path, tool_str, self) 
                 self.responsive_container.add_tool(btn)
 
     def on_category_context_menu(self, point):
-        """分类列表右键菜单"""
         item = self.category_list.itemAt(point)
         if not item: return
 
         menu = QMenu(self)
-        
         action_add = QAction("在此分类下添加软件", self)
         action_add.triggered.connect(lambda: self.add_software())
         menu.addAction(action_add)
         menu.addSeparator()
-
         action_rename = QAction("修改分类名称", self)
         action_rename.triggered.connect(lambda: self.rename_category(item))
         menu.addAction(action_rename)
-
         action_delete = QAction("删除分类", self)
         action_delete.triggered.connect(lambda: self.delete_category(item))
         menu.addAction(action_delete)
-
         menu.exec_(self.category_list.mapToGlobal(point))
 
     def add_category(self):
-        """添加新分类"""
         new_category, ok = QInputDialog.getText(self, '添加分类', '请输入新的分类名称:', text='新分类')
-        
         if ok and new_category and new_category not in self.data:
             self.data[new_category] = []
             item = QListWidgetItem(new_category)
@@ -697,7 +788,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "警告", "分类名称已存在！")
 
     def rename_category(self, item):
-        """修改分类名称"""
         old_category = item.text()
         new_category, ok = QInputDialog.getText(self, '修改分类名称', '请输入新的分类名称:', text=old_category)
         
@@ -705,13 +795,11 @@ class MainWindow(QMainWindow):
             if new_category in self.data:
                 QMessageBox.warning(self, "警告", "新分类名称已存在！")
                 return
-                
             self.data[new_category] = self.data.pop(old_category)
             item.setText(new_category)
             self.is_dirty = True
             
     def delete_category(self, item):
-        """删除分类"""
         category_name = item.text()
         reply = QMessageBox.question(
             self, '确认删除',
@@ -719,7 +807,6 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, 
             QMessageBox.No
         )
-        
         if reply == QMessageBox.Yes:
             self.data.pop(category_name, None)
             self.category_list.takeItem(self.category_list.row(item))
@@ -727,25 +814,31 @@ class MainWindow(QMainWindow):
             self.responsive_container.clear_tools()
             self.update_description("")
             
-    # --- 软件管理方法 ---
+    # --- 软件管理方法 (含新的排序保存逻辑) ---
+    def save_tools_order(self, new_tools_list):
+        """当图标在容器中被重新排序后调用此方法"""
+        current_item = self.category_list.currentItem()
+        if not current_item: return
+        
+        category = current_item.text()
+        if category in self.data:
+            self.data[category] = new_tools_list
+            self.is_dirty = True
+            # print("Debug: Order updated and saved to memory")
+
     def show_tool_context_menu(self, tool_info_str, global_pos):
-        """显示软件工具的右键管理菜单"""
         if not self.category_list.currentItem(): return
 
         menu = QMenu(self)
-        
         action_edit = QAction("修改软件信息", self)
         action_edit.triggered.connect(lambda: self.edit_software(tool_info_str))
         menu.addAction(action_edit)
-
         action_delete = QAction("删除软件", self)
         action_delete.triggered.connect(lambda: self.delete_software(tool_info_str))
         menu.addAction(action_delete)
-        
         menu.exec_(global_pos)
 
     def add_software(self):
-        """打开添加软件对话框"""
         current_item = self.category_list.currentItem()
         if not current_item:
             QMessageBox.warning(self, "警告", "请先在左侧选择一个分类！")
@@ -757,10 +850,9 @@ class MainWindow(QMainWindow):
         if dialog.exec_() == QDialog.Accepted and dialog.result:
             self.data[category].append(dialog.result)
             self.is_dirty = True
-            self.on_category_changed(current_item) # 刷新 UI
+            self.on_category_changed(current_item)
 
     def edit_software(self, old_tool_info_str):
-        """打开编辑软件对话框"""
         current_item = self.category_list.currentItem()
         if not current_item: return
         
@@ -771,20 +863,18 @@ class MainWindow(QMainWindow):
             if old_tool_info_str in self.data[category]:
                 index = self.data[category].index(old_tool_info_str)
                 self.data[category][index] = dialog.result
-                self.selected_software_info = dialog.result # 更新选中状态
+                self.selected_software_info = dialog.result 
                 self.is_dirty = True
-                self.on_category_changed(current_item) # 刷新 UI
+                self.on_category_changed(current_item) 
             else:
                  QMessageBox.warning(self, "错误", "未能找到原软件信息进行更新！")
 
 
     def delete_software(self, tool_info_str):
-        """删除软件"""
         current_item = self.category_list.currentItem()
         if not current_item: return
         category = current_item.text()
         
-        # 解析软件名称
         try:
             name = tool_info_str.split(' | ')[0]
         except:
@@ -807,7 +897,7 @@ class MainWindow(QMainWindow):
             else:
                  QMessageBox.warning(self, "错误", "未能找到该软件进行删除！")
 
-    # --- 运行/操作方法 (保持不变) ---
+    # --- 运行/操作方法 ---
     def update_description(self, text):
         self.desc_label.setText(text)
 
@@ -821,13 +911,10 @@ class MainWindow(QMainWindow):
 
         def _run():
             try:
-                if os.name == 'nt': # Windows系统
+                if os.name == 'nt': 
                     os.startfile(full_path)
-                else: # 其他系统（如Linux/macOS）
-                    subprocess.Popen(
-                        [full_path], 
-                        cwd=os.path.dirname(full_path)
-                    )
+                else: 
+                    subprocess.Popen([full_path], cwd=os.path.dirname(full_path))
                 
                 time.sleep(1) 
                 QTimer.singleShot(0, lambda: self.desc_label.setText(""))
@@ -843,13 +930,12 @@ class MainWindow(QMainWindow):
         full_path = os.path.join(self.current_dir, path.lstrip(os.sep))
         target = full_path if os.path.isdir(full_path) and os.path.exists(full_path) else os.path.dirname(full_path)
         
-        if os.name == 'nt': # Windows
+        if os.name == 'nt': 
             subprocess.Popen(f'explorer /select,"{os.path.abspath(full_path)}"', shell=True)
-        elif sys.platform == 'darwin': # macOS
+        elif sys.platform == 'darwin': 
             subprocess.Popen(['open', os.path.abspath(target)])
-        else: # Linux
+        else: 
             subprocess.Popen(['xdg-open', os.path.abspath(target)])
-
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -861,25 +947,18 @@ class MainWindow(QMainWindow):
         self.drag_pos = None
 
 if __name__ == "__main__":
-    # 1. 获取程序运行目录
     current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     
-    # 2. 尝试加载配置，如果失败，则退出
     if not load_config(current_dir):
-        # 此时还没有 QApplication，所以只能用 print 或 sys.exit(1)
         sys.exit(1)
         
-    # 3. 🚨 关键修复：创建 QApplication 实例
     app = QApplication(sys.argv)
     
-    # 4. 设置全局字体
     font = QFont(USER_CONFIG["FONT_FAMILY"])
     font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)
     
-    # 5. 创建主窗口
     win = MainWindow()
     win.show()
     
-    # 6. 运行事件循环
     sys.exit(app.exec_())
