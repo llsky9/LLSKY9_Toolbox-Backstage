@@ -571,6 +571,7 @@ class MainWindow(QMainWindow):
         self.category_list.model().rowsMoved.connect(self.on_category_reordered)
 
         cat_f_size = USER_CONFIG["FONT_SIZES"].get("CATEGORY", 15)
+        # --- START OF MODIFICATION: REMOVE :hover STYLE ---
         self.category_list.setStyleSheet(f"""
             QListWidget {{ background: transparent; border: none; outline: 0; }}
             QListWidget::item {{
@@ -582,11 +583,7 @@ class MainWindow(QMainWindow):
                 margin-bottom: 2px;
                 border: none;
             }}
-            QListWidget::item:hover {{ 
-                color: #ffffff;
-                padding-left: 20px;
-                background: rgba(255,255,255,0.1); 
-            }}
+            /* 移除了 QListWidget::item:hover 样式以避免干扰拖动 */
             QListWidget::item:selected {{
                 color: #FFFFFF;
                 font-weight: bold;
@@ -595,6 +592,7 @@ class MainWindow(QMainWindow):
                 color: #00aaff;
             }}
         """)
+        # --- END OF MODIFICATION ---
         self.category_list.currentItemChanged.connect(self.on_category_changed)
         self.category_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.category_list.customContextMenuRequested.connect(self.on_category_context_menu)
