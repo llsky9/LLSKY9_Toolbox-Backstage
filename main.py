@@ -38,7 +38,7 @@ class ToolData:
 class DatabaseManager:
     def __init__(self, db_path):
         self.db_path = db_path
-        # 【修改】确保数据库所在的文件夹存在，否则sqlite3连接会失败
+        # 确保数据库所在的文件夹存在
         db_dir = os.path.dirname(db_path)
         if not os.path.exists(db_dir):
             try:
@@ -144,7 +144,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
         USER_CONFIG.update({
             "WINDOW_WIDTH": parser.getint('WINDOW_SETTINGS', 'WINDOW_WIDTH'),
             "WINDOW_HEIGHT": parser.getint('WINDOW_SETTINGS', 'WINDOW_HEIGHT'),
-            "BG_IMAGE": parser.get('WINDOW_SETTINGS', 'BG_IMAGE'), # 这里通常已经是相对路径如 .res/my_bg.png
+            "BG_IMAGE": parser.get('WINDOW_SETTINGS', 'BG_IMAGE'),
             "SIDEBAR_RATIO": parser.getfloat('WINDOW_SETTINGS', 'SIDEBAR_RATIO'),
             "FONT_FAMILY": parser.get('WINDOW_SETTINGS', 'FONT_FAMILY'),
             "TEXT_COLOR": parser.get('WINDOW_SETTINGS', 'TEXT_COLOR'),
@@ -238,9 +238,7 @@ class IconPreloader(QThread):
                 if pixmap: ICON_CACHE[cache_key] = pixmap
 
     def _load_single_icon(self, name, path):
-        # 1. 优先检查 .res/icons/ (如果你希望把图标也放在res里，可以改这里，
-        # 目前保持 V18 逻辑优先找 icons 文件夹，通常 icons 文件夹在根目录或 res 下)
-        # 这里为了稳妥，仍然检查根目录下的 icons，如果你的 icons 也在 res 里，请告诉我
+        # 1. 优先检查 icons 文件夹
         icon_path_png = os.path.join(self.current_dir, "icons", f"{name}.png")
         if os.path.exists(icon_path_png):
             return QPixmap(icon_path_png).scaled(self.icon_size, self.icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -254,11 +252,9 @@ class IconPreloader(QThread):
             if not pixmap_raw.isNull():
                  return pixmap_raw.scaled(self.icon_size, self.icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
-        # 3. 默认图标 (建议也放在 .res 下，比如 .res/default.png)
-        # 尝试 .res/default.png
+        # 3. 默认图标
         default_path = os.path.join(self.current_dir, ".res", "default.png")
         if not os.path.exists(default_path):
-            # 回退到根目录找 default.png
             default_path = os.path.join(self.current_dir, "default.png")
             
         if os.path.exists(default_path):
@@ -658,7 +654,7 @@ class MainWindow(QMainWindow):
         self.current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
         self.drag_pos = None
         
-        # 【核心修改】数据库路径改为 .res/data.db
+        # 数据库路径 .res/data.db
         db_path = os.path.join(self.current_dir, ".res", "data.db")
         self.db = DatabaseManager(db_path)
         
@@ -959,18 +955,24 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, 
                 QMessageBox.Yes
             )
+            
             if reply == QMessageBox.Yes:
                 if self.db.save_snapshot(self.data):
-                    event.accept()
+                    # 保存成功，强制退出
+                    os._exit(0)
                 else:
                     QMessageBox.critical(self, "错误", "保存失败！无法写入数据库。")
                     event.ignore()
+            
             elif reply == QMessageBox.No:
-                event.accept()
+                # 放弃修改，强制退出
+                os._exit(0)
+            
             else:
                 event.ignore()
         else:
-            event.accept()
+            # 无修改，强制退出
+            os._exit(0)
 
     def update_description(self, text):
         self.desc_label.setText(text)
