@@ -13,15 +13,15 @@ from PyQt5.QtWidgets import (
     QDialog, QLineEdit, QPushButton, QGridLayout, QFileDialog,
     QAbstractItemView
 )
-from PyQt5.QtCore import Qt, QFileInfo, QPoint, QTimer
-from PyQt5.QtGui import QPixmap, QFont
+from PyQt5.QtCore import Qt, QFileInfo, QPoint, QTimer, QUrl
+from PyQt5.QtGui import QPixmap, QFont, QDesktopServices # 【新增】QDesktopServices
 
 # 全局配置变量和图标缓存
 USER_CONFIG = {}
 ICON_CACHE = {}
 
 # ==========================================
-#           配置加载函数
+#           配置加载函数 (保持不变)
 # ==========================================
 def load_config(current_dir, config_file=".res/config.ini"):
     """从ini文件加载配置并转换为字典格式"""
@@ -122,7 +122,7 @@ def load_config(current_dir, config_file=".res/config.ini"):
 
 
 # ==========================================
-#      核心组件1.1：占位符 (用于显示空位)
+#      核心组件1.1：占位符 (保持不变)
 # ==========================================
 class GridPlaceholder(QWidget):
     """拖拽时用于占位的虚线框"""
@@ -139,7 +139,7 @@ class GridPlaceholder(QWidget):
 
 
 # ==========================================
-#      核心组件1：自动居中流式容器
+#      核心组件1：自动居中流式容器 (保持不变)
 # ==========================================
 class ResponsiveContainer(QWidget):
     def __init__(self, parent=None):
@@ -282,16 +282,17 @@ class ResponsiveContainer(QWidget):
 #      核心组件2：软件图标 (修复拖拽重影)
 # ==========================================
 class ToolItem(QWidget):
-    def __init__(self, name, desc, path, tool_info_str, parent_win):
+    # 【修改】增加 url 参数
+    def __init__(self, name, desc, path, url, tool_info_str, parent_win):
         super().__init__()
         self.name = name
         self.desc = desc 
         self.path = path
+        self.url = url # 【新增】
         self.tool_info_str = tool_info_str 
         self.parent_win = parent_win
         
         self.last_left_click = 0
-        self.last_right_click = 0
         self.click_interval = 300 
         
         # 拖拽相关
@@ -418,13 +419,10 @@ class ToolItem(QWidget):
             self.last_left_click = current_time
             
         elif event.button() == Qt.RightButton:
-            current_time = time.time() * 1000
-            if current_time - self.last_right_click > self.click_interval:
-                self.parent_win.selected_software_info = self.tool_info_str
-                self.parent_win.show_tool_context_menu(self.tool_info_str, event.globalPos())
-            if current_time - self.last_right_click < self.click_interval:
-                self.parent_win.open_folder(self.path)
-            self.last_right_click = current_time
+            # 右键点击逻辑：不需要双击，直接弹出菜单
+            # 如果需要保留旧逻辑，可以在这里做判断，但建议直接弹出菜单
+            self.parent_win.selected_software_info = self.tool_info_str
+            self.parent_win.show_tool_context_menu(self.tool_info_str, event.globalPos())
 
     def mouseMoveEvent(self, event):
         if not (event.buttons() & Qt.LeftButton):
@@ -535,7 +533,7 @@ class ToolItem(QWidget):
 
 
 # ==========================================
-#      核心组件3：软件添加/编辑对话框
+#      核心组件3：软件添加/编辑对话框 (核心修改)
 # ==========================================
 class AddEditSoftwareDialog(QDialog):
     def __init__(self, parent, category, tool_info_str=None):
@@ -546,7 +544,7 @@ class AddEditSoftwareDialog(QDialog):
         self.result = None 
         self.parent_win = parent
         
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(450) # 稍微加宽
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("background-color: #333; color: white;") 
 
@@ -577,19 +575,30 @@ class AddEditSoftwareDialog(QDialog):
         browse_btn.clicked.connect(self.browse_file)
         layout.addWidget(browse_btn, 2, 2)
         
+        # 【新增】官网链接输入框
+        layout.addWidget(QLabel("官网:"), 3, 0)
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("http:// 或 https:// 开头的链接 (选填)")
+        self.url_input.setStyleSheet("background-color: #555; color: white;")
+        layout.addWidget(self.url_input, 3, 1, 1, 2)
+        
         save_btn = QPushButton("💾 保存")
         save_btn.setStyleSheet("background-color: #00aaff; color: white; border-radius: 5px; height: 30px;")
         save_btn.clicked.connect(self.save_data)
-        layout.addWidget(save_btn, 3, 0, 1, 3)
+        layout.addWidget(save_btn, 4, 0, 1, 3)
 
     def load_data(self, tool_info_str):
         parts = tool_info_str.split("|")
         name = parts[0].strip() if len(parts) > 0 else ""
         desc = parts[1].strip() if len(parts) > 1 else ""
         path = parts[2].strip() if len(parts) > 2 else ""
+        # 【新增】解析URL，处理旧数据
+        url  = parts[3].strip() if len(parts) > 3 else "" 
+        
         self.name_input.setText(name)
         self.desc_input.setText(desc)
         self.path_input.setText(path)
+        self.url_input.setText(url)
         self.setWindowTitle(f"编辑软件: {name}")
 
     def browse_file(self):
@@ -603,12 +612,14 @@ class AddEditSoftwareDialog(QDialog):
         name = self.name_input.text().strip()
         desc = self.desc_input.text().strip()
         path = self.path_input.text().strip()
+        url  = self.url_input.text().strip() # 【新增】
         
         if not name or not path:
             QMessageBox.warning(self, "警告", "工具名和路径不能为空！")
             return
             
-        self.result = f"{name} | {desc} | {path}"
+        # 【修改】保存为4段格式
+        self.result = f"{name} | {desc} | {path} | {url}"
         self.accept()
 
 # ==========================================
@@ -856,8 +867,7 @@ class MainWindow(QMainWindow):
         skipped_one_drag = False
 
         for tool_str in tools:
-            # 【重要】去重逻辑：如果该工具正在被拖拽，且未被跳过一次，则不加载它
-            # 使用 skipped_one_drag 是为了防止有重复的工具只隐藏一个
+            # 【重要】去重逻辑
             if self.dragging_tool_data and tool_str == self.dragging_tool_data and not skipped_one_drag:
                 skipped_one_drag = True
                 continue
@@ -867,8 +877,10 @@ class MainWindow(QMainWindow):
                 name = parts[0].strip()
                 desc = parts[1].strip()
                 path = parts[2].strip() 
+                # 【修改】解析 URL
+                url  = parts[3].strip() if len(parts) > 3 else ""
                 
-                btn = ToolItem(name, desc, path, tool_str, self) 
+                btn = ToolItem(name, desc, path, url, tool_str, self) 
                 self.responsive_container.add_tool(btn)
     
     def on_category_reordered(self, parent, start, end, destination, row):
@@ -944,16 +956,38 @@ class MainWindow(QMainWindow):
             self.responsive_container.clear_tools()
             self.update_description("")
             
+    # 【核心修改】后台右键菜单增加功能
     def show_tool_context_menu(self, tool_info_str, global_pos):
         if not self.category_list.currentItem(): return
 
+        # 解析数据以便获取路径和URL
+        parts = tool_info_str.split("|")
+        path = parts[2].strip() if len(parts) > 2 else ""
+        url = parts[3].strip() if len(parts) > 3 else ""
+
         menu = QMenu(self)
-        action_edit = QAction("修改软件信息", self)
+        
+        # 1. 基础功能
+        action_folder = menu.addAction("📂 打开所在文件夹")
+        action_folder.triggered.connect(lambda: self.open_folder(path))
+        
+        action_web = menu.addAction("🌐 访问官方网站")
+        if url:
+             action_web.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        else:
+             action_web.setEnabled(False)
+             
+        menu.addSeparator()
+
+        # 2. 编辑管理功能
+        action_edit = QAction("✏️ 修改软件信息", self)
         action_edit.triggered.connect(lambda: self.edit_software(tool_info_str))
         menu.addAction(action_edit)
-        action_delete = QAction("删除软件", self)
+        
+        action_delete = QAction("🗑️ 删除软件", self)
         action_delete.triggered.connect(lambda: self.delete_software(tool_info_str))
         menu.addAction(action_delete)
+        
         menu.exec_(global_pos)
 
     def add_software(self):
@@ -993,7 +1027,7 @@ class MainWindow(QMainWindow):
         category = current_item.text()
         
         try:
-            name = tool_info_str.split(' | ')[0]
+            name = tool_info_str.split('|')[0].strip()
         except:
              name = "未知软件"
         
