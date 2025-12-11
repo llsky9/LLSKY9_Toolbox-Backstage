@@ -5,6 +5,7 @@ import time
 import subprocess
 import threading
 import configparser
+import shutil  # 【新增】用于文件复制
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QWidget, 
     QListWidget, QListWidgetItem, QScrollArea, 
@@ -96,8 +97,58 @@ class DatabaseManager:
         conn.close()
         return data
 
+    def create_backup(self):
+        """【新增】创建备份并保留最新的5个"""
+        if not os.path.exists(self.db_path):
+            return
+
+        try:
+            # 1. 确定 save 目录路径 (位于 .res 同级的 save 目录)
+            # self.db_path 是 .../.res/data.db
+            res_dir = os.path.dirname(self.db_path)  # 获取 .res 目录
+            root_dir = os.path.dirname(res_dir)      # 获取 根目录
+            save_dir = os.path.join(root_dir, "save")
+
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+
+            # 2. 生成带时间戳的备份文件名
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            backup_name = f"data_{timestamp}.db"
+            backup_path = os.path.join(save_dir, backup_name)
+
+            # 3. 复制文件 (备份当前旧版本)
+            shutil.copy2(self.db_path, backup_path)
+            print(f"Backup created: {backup_path}")
+
+            # 4. 清理旧备份 (只保留最新的5个)
+            all_backups = []
+            for f in os.listdir(save_dir):
+                if f.startswith("data_") and f.endswith(".db"):
+                    full_p = os.path.join(save_dir, f)
+                    all_backups.append(full_p)
+            
+            # 按修改时间排序 (最旧的在前)
+            all_backups.sort(key=os.path.getmtime)
+            
+            # 如果超过5个，删除前面的
+            while len(all_backups) > 5:
+                oldest_file = all_backups.pop(0)
+                try:
+                    os.remove(oldest_file)
+                    print(f"Removed old backup: {oldest_file}")
+                except Exception as e:
+                    print(f"Failed to remove old backup: {e}")
+
+        except Exception as e:
+            print(f"Backup Process Error: {e}")
+
     def save_snapshot(self, data_dict):
-        """一次性将内存数据覆盖写入数据库 (非即时生效机制)"""
+        """一次性将内存数据覆盖写入数据库"""
+        
+        # 【新增】在写入新数据前，先备份旧数据
+        self.create_backup()
+
         conn = self.get_connection()
         try:
             conn.execute("BEGIN TRANSACTION")
@@ -951,7 +1002,7 @@ class MainWindow(QMainWindow):
         if self.is_dirty:
             reply = QMessageBox.question(
                 self, '保存更改',
-                "检测到布局或数据已修改。\n是否保存到数据库？\n(选择 No 将丢弃本次所有修改)", 
+                "检测到布局或数据已修改。\n是否保存到数据库？\n(同时会创建旧版本的备份到 save 目录)", 
                 QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, 
                 QMessageBox.Yes
             )
