@@ -5,7 +5,7 @@ import time
 import subprocess
 import threading
 import configparser
-import shutil  # 【新增】用于文件复制
+import shutil
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QWidget, 
     QListWidget, QListWidgetItem, QScrollArea, 
@@ -39,7 +39,6 @@ class ToolData:
 class DatabaseManager:
     def __init__(self, db_path):
         self.db_path = db_path
-        # 确保数据库所在的文件夹存在
         db_dir = os.path.dirname(db_path)
         if not os.path.exists(db_dir):
             try:
@@ -52,7 +51,6 @@ class DatabaseManager:
         return sqlite3.connect(self.db_path)
 
     def init_db(self):
-        """初始化数据库表结构"""
         conn = self.get_connection()
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS categories (
@@ -74,64 +72,47 @@ class DatabaseManager:
         conn.close()
 
     def load_all_data(self):
-        """读取数据库，加载到内存字典中"""
         data = {}
         conn = self.get_connection()
         c = conn.cursor()
-        
-        # 1. 查分类 (按 sort_order 排序)
         c.execute("SELECT id, name FROM categories ORDER BY sort_order ASC")
         categories = c.fetchall()
-        
         for cat_id, cat_name in categories:
             tool_list = []
-            # 2. 查工具 (按 sort_order 排序)
             c.execute("SELECT name, description, path, url FROM tools WHERE category_id=? ORDER BY sort_order ASC", (cat_id,))
             tools = c.fetchall()
             for row in tools:
                 tool_obj = ToolData(row[0], row[1], row[2], row[3])
                 tool_list.append(tool_obj)
-            
             data[cat_name] = tool_list 
-            
         conn.close()
         return data
 
     def create_backup(self):
-        """【新增】创建备份并保留最新的5个"""
         if not os.path.exists(self.db_path):
             return
-
         try:
-            # 1. 确定 save 目录路径 (位于 .res 同级的 save 目录)
-            # self.db_path 是 .../.res/data.db
-            res_dir = os.path.dirname(self.db_path)  # 获取 .res 目录
-            root_dir = os.path.dirname(res_dir)      # 获取 根目录
+            res_dir = os.path.dirname(self.db_path)
+            root_dir = os.path.dirname(res_dir)
             save_dir = os.path.join(root_dir, "save")
 
             if not os.path.exists(save_dir):
                 os.makedirs(save_dir)
 
-            # 2. 生成带时间戳的备份文件名
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             backup_name = f"data_{timestamp}.db"
             backup_path = os.path.join(save_dir, backup_name)
 
-            # 3. 复制文件 (备份当前旧版本)
             shutil.copy2(self.db_path, backup_path)
             print(f"Backup created: {backup_path}")
 
-            # 4. 清理旧备份 (只保留最新的5个)
             all_backups = []
             for f in os.listdir(save_dir):
                 if f.startswith("data_") and f.endswith(".db"):
                     full_p = os.path.join(save_dir, f)
                     all_backups.append(full_p)
             
-            # 按修改时间排序 (最旧的在前)
             all_backups.sort(key=os.path.getmtime)
-            
-            # 如果超过5个，删除前面的
             while len(all_backups) > 5:
                 oldest_file = all_backups.pop(0)
                 try:
@@ -139,16 +120,11 @@ class DatabaseManager:
                     print(f"Removed old backup: {oldest_file}")
                 except Exception as e:
                     print(f"Failed to remove old backup: {e}")
-
         except Exception as e:
             print(f"Backup Process Error: {e}")
 
     def save_snapshot(self, data_dict):
-        """一次性将内存数据覆盖写入数据库"""
-        
-        # 【新增】在写入新数据前，先备份旧数据
         self.create_backup()
-
         conn = self.get_connection()
         try:
             conn.execute("BEGIN TRANSACTION")
@@ -179,7 +155,7 @@ class DatabaseManager:
             conn.close()
 
 # ==========================================
-#      配置加载 (读取 .res/config.ini)
+#      配置加载
 # ==========================================
 def load_config(current_dir, config_file=".res/config.ini"):
     global USER_CONFIG
@@ -497,7 +473,6 @@ class ToolItem(QWidget):
                 pixmap = icon.pixmap(icon_size, icon_size)
 
         if not pixmap or pixmap.isNull():
-            # 尝试在 .res 中寻找默认图标
             default_path = os.path.join(current_dir, ".res", "default.png")
             if not os.path.exists(default_path):
                 default_path = os.path.join(current_dir, "default.png")
@@ -729,6 +704,9 @@ class MainWindow(QMainWindow):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowMinimizeButtonHint | Qt.WindowSystemMenuHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle(USER_CONFIG.get("TITLE_TEXT", "LLSKY9工具箱"))
+        
+        # 【新增】启用主窗口的拖放功能
+        self.setAcceptDrops(True)
 
     def setup_ui(self):
         # 背景
@@ -1059,6 +1037,57 @@ class MainWindow(QMainWindow):
             self.move(event.globalPos() - self.drag_pos)
     def mouseReleaseEvent(self, event):
         self.drag_pos = None
+
+    # ==========================================
+    #      【新增】 拖放功能实现
+    # ==========================================
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        # 1. 获取当前选中的分类，若无则尝试选第一个
+        current_item = self.category_list.currentItem()
+        if not current_item:
+            if self.category_list.count() > 0:
+                self.category_list.setCurrentRow(0)
+                current_item = self.category_list.currentItem()
+            else:
+                QMessageBox.warning(self, "提示", "请先创建并选择一个分类，再拖入文件！")
+                return
+        
+        category = current_item.text()
+        has_added = False
+
+        # 2. 遍历拖入的文件
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if not file_path: continue
+            
+            # 计算相对路径
+            try:
+                rel_path = os.path.relpath(file_path, self.current_dir)
+            except ValueError:
+                rel_path = file_path
+                
+            # 获取文件名
+            file_info = QFileInfo(file_path)
+            name = file_info.baseName()
+            
+            # 预填充数据并弹窗
+            prefill_data = ToolData(name, "", rel_path, "")
+            dialog = AddEditSoftwareDialog(self, category, tool_data=prefill_data)
+            dialog.setWindowTitle(f"添加拖入的文件: {name}") 
+            
+            if dialog.exec_() == QDialog.Accepted and dialog.result_data:
+                self.data[category].append(dialog.result_data)
+                has_added = True
+
+        if has_added:
+            self.is_dirty = True
+            self.refresh_ui_from_memory()
 
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
