@@ -1039,7 +1039,7 @@ class MainWindow(QMainWindow):
         self.drag_pos = None
 
     # ==========================================
-    #      【新增】 拖放功能实现
+    #      【新增】 拖放功能实现 (含路径逻辑)
     # ==========================================
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1066,18 +1066,37 @@ class MainWindow(QMainWindow):
             file_path = url.toLocalFile()
             if not file_path: continue
             
-            # 计算相对路径
-            try:
-                rel_path = os.path.relpath(file_path, self.current_dir)
-            except ValueError:
-                rel_path = file_path
-                
+            # --- 核心路径处理逻辑 ---
+            
+            # 标准化路径分隔符
+            abs_file_path = os.path.normpath(file_path)
+            abs_app_dir = os.path.normpath(self.current_dir)
+
+            # 获取盘符并转大写
+            file_drive = os.path.splitdrive(abs_file_path)[0].upper()
+            app_drive = os.path.splitdrive(abs_app_dir)[0].upper()
+
+            final_path = abs_file_path # 默认绝对路径
+
+            # 1. 如果盘符相同 -> 相对路径
+            if file_drive == app_drive and file_drive != "":
+                try:
+                    # 自动处理为 "subdir/..." 或 "../dir/..."
+                    final_path = os.path.relpath(abs_file_path, abs_app_dir)
+                except ValueError:
+                    final_path = abs_file_path
+            else:
+                # 2. 不同盘符 -> 绝对路径
+                final_path = abs_file_path
+            
+            # --- 处理结束 ---
+
             # 获取文件名
             file_info = QFileInfo(file_path)
             name = file_info.baseName()
             
-            # 预填充数据并弹窗
-            prefill_data = ToolData(name, "", rel_path, "")
+            # 预填充数据
+            prefill_data = ToolData(name, "", final_path, "")
             dialog = AddEditSoftwareDialog(self, category, tool_data=prefill_data)
             dialog.setWindowTitle(f"添加拖入的文件: {name}") 
             
