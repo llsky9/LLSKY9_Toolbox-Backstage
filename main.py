@@ -18,6 +18,50 @@ from PyQt5.QtCore import Qt, QFileInfo, QPoint, QTimer, QThread, QUrl, QRectF
 from PyQt5.QtGui import QPixmap, QFont, QDesktopServices, QPainter, QPainterPath, QBrush, QColor
 
 # ==========================================
+#           全局工具函数
+# ==========================================
+
+def resolve_path(base_dir, user_path):
+    """
+    智能解析路径：
+    1. 如果 user_path 是绝对路径，直接返回。
+    2. 如果 user_path 是相对路径，将其与 base_dir 拼接。
+    """
+    if not user_path:
+        return ""
+    # 清理路径分隔符
+    user_path = os.path.normpath(user_path)
+    
+    if os.path.isabs(user_path):
+        return user_path
+    else:
+        # 移除开头的 ./ 或 .\ (虽然 join 会处理，但为了保险)
+        if user_path.startswith("." + os.sep):
+            user_path = user_path[2:]
+        return os.path.normpath(os.path.join(base_dir, user_path))
+
+def make_smart_relative(base_dir, target_path):
+    """
+    智能生成保存路径：
+    1. 同盘符 -> 转相对路径
+    2. 异盘符 -> 保持绝对路径
+    """
+    target_path = os.path.normpath(target_path)
+    base_dir = os.path.normpath(base_dir)
+    
+    # Windows 下判断盘符
+    if os.name == 'nt':
+        drive_target = os.path.splitdrive(target_path)[0].upper()
+        drive_base = os.path.splitdrive(base_dir)[0].upper()
+        if drive_target != drive_base and drive_target != "":
+            return target_path # 不同盘符，必须绝对路径
+            
+    try:
+        return os.path.relpath(target_path, base_dir)
+    except ValueError:
+        return target_path
+
+# ==========================================
 #           全局配置与缓存
 # ==========================================
 USER_CONFIG = {}
@@ -112,6 +156,7 @@ class DatabaseManager:
                     full_p = os.path.join(save_dir, f)
                     all_backups.append(full_p)
             
+            # 按修改时间排序，保留最新的5个
             all_backups.sort(key=os.path.getmtime)
             while len(all_backups) > 5:
                 oldest_file = all_backups.pop(0)
@@ -265,13 +310,14 @@ class IconPreloader(QThread):
                 if pixmap: ICON_CACHE[cache_key] = pixmap
 
     def _load_single_icon(self, name, path):
-        # 1. 优先检查 icons 文件夹
+        # 1. 优先检查 icons 文件夹 (自定义图标)
         icon_path_png = os.path.join(self.current_dir, "icons", f"{name}.png")
         if os.path.exists(icon_path_png):
             return QPixmap(icon_path_png).scaled(self.icon_size, self.icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         
-        # 2. Exe提取
-        full_path = os.path.join(self.current_dir, path.lstrip(os.sep))
+        # 2. Exe/文件/文件夹 系统图标提取
+        # 使用 resolve_path 处理绝对/相对路径
+        full_path = resolve_path(self.current_dir, path)
         if os.path.exists(full_path):
             file_info = QFileInfo(full_path)
             icon = QFileIconProvider().icon(file_info)
@@ -461,17 +507,20 @@ class ToolItem(QWidget):
         icon_size = USER_CONFIG["ITEM_CONFIG"]["ICON_SIZE"]
         pixmap = None
         
+        # 1. 检查自定义图标
         icon_path_png = os.path.join(current_dir, "icons", f"{self.name}.png")
         if os.path.exists(icon_path_png):
             pixmap = QPixmap(icon_path_png)
         
+        # 2. 系统图标提取 (使用 resolve_path 处理路径)
         if not pixmap or pixmap.isNull():
-            full_path = os.path.join(current_dir, self.path.lstrip(os.sep))
+            full_path = resolve_path(current_dir, self.path)
             if os.path.exists(full_path):
                 file_info = QFileInfo(full_path)
                 icon = QFileIconProvider().icon(file_info)
                 pixmap = icon.pixmap(icon_size, icon_size)
 
+        # 3. 默认图标
         if not pixmap or pixmap.isNull():
             default_path = os.path.join(current_dir, ".res", "default.png")
             if not os.path.exists(default_path):
@@ -480,6 +529,7 @@ class ToolItem(QWidget):
             if os.path.exists(default_path):
                 pixmap = QPixmap(default_path)
 
+        # 4. 设置图标并缓存
         if pixmap and not pixmap.isNull():
             scaled = pixmap.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.icon_label.setPixmap(scaled)
@@ -655,8 +705,13 @@ class AddEditSoftwareDialog(QDialog):
         initial_dir = self.parent_win.current_dir
         file_path, _ = QFileDialog.getOpenFileName(self, "选择软件文件", initial_dir, "所有文件 (*.*)")
         if file_path:
-            relative_path = os.path.relpath(file_path, self.parent_win.current_dir)
-            self.path_input.setText(relative_path)
+            # 使用智能相对路径处理
+            final_path = make_smart_relative(self.parent_win.current_dir, file_path)
+            self.path_input.setText(final_path)
+            
+            # 如果名字为空，自动填充
+            if not self.name_input.text():
+                self.name_input.setText(QFileInfo(file_path).baseName())
 
     def save_data(self):
         name = self.name_input.text().strip()
@@ -705,7 +760,7 @@ class MainWindow(QMainWindow):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle(USER_CONFIG.get("TITLE_TEXT", "LLSKY9工具箱"))
         
-        # 【新增】启用主窗口的拖放功能
+        # 启用主窗口的拖放功能
         self.setAcceptDrops(True)
 
     def setup_ui(self):
@@ -1007,15 +1062,19 @@ class MainWindow(QMainWindow):
         self.desc_label.setText(text)
 
     def launch_app(self, path):
-        full_path = os.path.join(self.current_dir, path.lstrip(os.sep))
-        self.desc_label.setText(f"正在启动: {os.path.basename(path)}...")
+        # 使用 resolve_path 解析路径，支持绝对路径启动
+        full_path = resolve_path(self.current_dir, path)
+        
+        self.desc_label.setText(f"正在启动: {os.path.basename(full_path)}...")
         if not os.path.exists(full_path):
-            self.desc_label.setText("错误: 文件不存在！")
+            self.desc_label.setText(f"错误: 文件不存在! ({full_path})")
             return
         def _run():
             try:
-                if os.name == 'nt': os.startfile(full_path)
-                else: subprocess.Popen([full_path], cwd=os.path.dirname(full_path))
+                if os.name == 'nt': 
+                    os.startfile(full_path)
+                else: 
+                    subprocess.Popen([full_path], cwd=os.path.dirname(full_path))
                 time.sleep(1) 
                 QTimer.singleShot(0, lambda: self.desc_label.setText(""))
             except Exception as e: 
@@ -1023,11 +1082,20 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_run, daemon=True).start()
     
     def open_folder(self, path):
-        full_path = os.path.join(self.current_dir, path.lstrip(os.sep))
+        # 使用 resolve_path 解析路径
+        full_path = resolve_path(self.current_dir, path)
+        
         target = full_path if os.path.isdir(full_path) else os.path.dirname(full_path)
-        if os.name == 'nt': subprocess.Popen(f'explorer /select,"{os.path.abspath(full_path)}"', shell=True)
-        elif sys.platform == 'darwin': subprocess.Popen(['open', os.path.abspath(target)])
-        else: subprocess.Popen(['xdg-open', os.path.abspath(target)])
+        if not os.path.exists(target):
+            QMessageBox.warning(self, "错误", f"路径不存在:\n{target}")
+            return
+
+        if os.name == 'nt': 
+            subprocess.Popen(f'explorer /select,"{os.path.abspath(full_path)}"', shell=True)
+        elif sys.platform == 'darwin': 
+            subprocess.Popen(['open', os.path.abspath(target)])
+        else: 
+            subprocess.Popen(['xdg-open', os.path.abspath(target)])
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -1039,7 +1107,7 @@ class MainWindow(QMainWindow):
         self.drag_pos = None
 
     # ==========================================
-    #      【新增】 拖放功能实现 (含路径逻辑)
+    #       拖放功能 (Drop Event)
     # ==========================================
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -1066,30 +1134,8 @@ class MainWindow(QMainWindow):
             file_path = url.toLocalFile()
             if not file_path: continue
             
-            # --- 核心路径处理逻辑 ---
-            
-            # 标准化路径分隔符
-            abs_file_path = os.path.normpath(file_path)
-            abs_app_dir = os.path.normpath(self.current_dir)
-
-            # 获取盘符并转大写
-            file_drive = os.path.splitdrive(abs_file_path)[0].upper()
-            app_drive = os.path.splitdrive(abs_app_dir)[0].upper()
-
-            final_path = abs_file_path # 默认绝对路径
-
-            # 1. 如果盘符相同 -> 相对路径
-            if file_drive == app_drive and file_drive != "":
-                try:
-                    # 自动处理为 "subdir/..." 或 "../dir/..."
-                    final_path = os.path.relpath(abs_file_path, abs_app_dir)
-                except ValueError:
-                    final_path = abs_file_path
-            else:
-                # 2. 不同盘符 -> 绝对路径
-                final_path = abs_file_path
-            
-            # --- 处理结束 ---
+            # 使用智能相对路径处理函数
+            final_path = make_smart_relative(self.current_dir, file_path)
 
             # 获取文件名
             file_info = QFileInfo(file_path)
